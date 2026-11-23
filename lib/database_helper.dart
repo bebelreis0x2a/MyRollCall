@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'estudante_model.dart';
@@ -5,6 +6,9 @@ import 'estudante_model.dart';
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
   static Database? _database;
+
+  // Fallback em memória apenas para quando rodar no navegador (Chrome/Edge)
+  final List<Estudante> _memoriaWeb = [];
 
   DatabaseHelper._init();
 
@@ -35,11 +39,18 @@ class DatabaseHelper {
   }
 
   Future<int> inserirEstudante(Estudante aluno) async {
+    if (kIsWeb) {
+      _memoriaWeb.add(aluno);
+      return _memoriaWeb.length;
+    }
     final db = await instance.database;
     return await db.insert('estudantes', aluno.toMap());
   }
 
   Future<List<Estudante>> listarEstudantes() async {
+    if (kIsWeb) {
+      return List.from(_memoriaWeb);
+    }
     final db = await instance.database;
     final resultado = await db.query('estudantes', orderBy: 'nome ASC');
     return resultado.map((json) => Estudante.fromMap(json)).toList();
