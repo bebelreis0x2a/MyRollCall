@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'database_helper.dart';
+import 'estudante_model.dart';
 
 class MonitorPage extends StatefulWidget {
   const MonitorPage({super.key});
@@ -10,64 +13,128 @@ class MonitorPage extends StatefulWidget {
 class _MonitorPageState extends State<MonitorPage> {
   int indiceAtual = 0;
 
-  // Controllers para o cadastro de estudantes
   final nomeController = TextEditingController();
   final raController = TextEditingController();
   final blocoController = TextEditingController();
 
-  // Lista simulada em memória (substitui o banco de dados por enquanto)
-  final List<Map<String, String>> estudantesCadastrados = [
-    {'nome': 'João Silva', 'ra': '12345', 'bloco': 'Bloco A'},
-    {'nome': 'Maria Souza', 'ra': '67890', 'bloco': 'Bloco B'},
-  ];
+  List<Estudante> estudantesSQLite = [];
 
-  void cadastrarEstudante() {
-    if (nomeController.text.isNotEmpty && raController.text.isNotEmpty) {
+  @override
+  void initState() {
+    super.initState();
+    carregarEstudantesLocais();
+  }
+
+  Future<void> carregarEstudantesLocais() async {
+    try {
+      final lista = await DatabaseHelper.instance.listarEstudantes();
+      if (!mounted) return;
       setState(() {
-        estudantesCadastrados.add({
-          'nome': nomeController.text,
-          'ra': raController.text,
-          'bloco': blocoController.text,
-        });
-        nomeController.clear();
-        raController.clear();
-        blocoController.clear();
+        estudantesSQLite = lista;
       });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Erro ao ler banco local: $e')),
+        );
+      }
+    }
+  }
 
+  Future<void> cadastrarEstudante() async {
+    if (nomeController.text.isEmpty || raController.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Estudante cadastrado com sucesso!')),
+        const SnackBar(content: Text('Preencha pelo menos Nome e RA.')),
       );
+      return;
+    }
+
+    try {
+      final novoAluno = Estudante(
+        nome: nomeController.text.trim(),
+        ra: raController.text.trim(),
+        bloco: blocoController.text.trim(),
+      );
+
+      await DatabaseHelper.instance.inserirEstudante(novoAluno);
+
+      nomeController.clear();
+      raController.clear();
+      blocoController.clear();
+
+      await carregarEstudantesLocais();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Salvo no banco SQLite com sucesso!')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Erro ao salvar no SQLite: $e')),
+        );
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    // Definindo as telas acessadas via NavigationBar
     final List<Widget> paginas = [
-      
-      // ABA 1: Painel de Ocorrências / Resumo da Chamada
-      ListView(
+      // ABA 1: Presenças em tempo real vindas do Firebase Firestore
+      Padding(
         padding: const EdgeInsets.all(16),
-        children: const [
-          Text('Resumo da Chamada', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-          SizedBox(height: 12),
-          Card(
-            child: ListTile(
-              leading: Icon(Icons.warning, color: Colors.orange),
-              title: Text('Pendências de Chamada'),
-              subtitle: Text('3 alunos ainda não registraram presença.'),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Presenças Registradas (Firebase)', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            Expanded(
+              child: StreamBuilder<QuerySnapshot>(
+                stream: FirebaseFirestore.instance
+                    .collection('chamadas')
+                    .orderBy('data', descending: true)
+                    .snapshots(),
+                builder: (context, snapshot) {
+                  if (snapshot.hasError) {
+                    return const Center(child: Text('Erro ao carregar dados do Firebase.'));
+                  }
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+
+                  final docs = snapshot.data?.docs ?? [];
+                  if (docs.isEmpty) {
+                    return const Center(child: Text('Nenhuma presença registrada ainda.'));
+                  }
+
+                  return ListView.builder(
+                    itemCount: docs.length,
+                    itemBuilder: (context, index) {
+                      final dados = docs[index].data() as Map<String, Object?>;
+                      return Card(
+                        child: ListTile(
+                          leading: const Icon(Icons.check_circle, color: Colors.green),
+                          title: Text('RA: ${dados['ra']} - ${dados['bloco']}'),
+                          subtitle: Text('Registrado às ${dados['horario'] ?? '--:--'}'),
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
 
-      // ABA 2: Lista e Cadastro de Alunos Alojados (Realizado pelo Monitor)
+      // ABA 2: Cadastro de Alunos Alojados persistido no SQLite
       SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Cadastrar Novo Estudante', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            const Text('Cadastrar Estudante (SQLite)', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             const SizedBox(height: 12),
             TextField(
               controller: nomeController,
@@ -88,25 +155,23 @@ class _MonitorPageState extends State<MonitorPage> {
               width: double.infinity,
               child: ElevatedButton(
                 onPressed: cadastrarEstudante,
-                child: const Text('Salvar Cadastro'),
+                child: const Text('Salvar no SQLite'),
               ),
             ),
             const SizedBox(height: 25),
-            const Text('Alunos Cadastrados', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const Text('Alunos Cadastrados Localmente', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 10),
-            
-            // Renderização da lista mantida em memória
             ListView.builder(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              itemCount: estudantesCadastrados.length,
+              itemCount: estudantesSQLite.length,
               itemBuilder: (context, index) {
-                final aluno = estudantesCadastrados[index];
+                final aluno = estudantesSQLite[index];
                 return Card(
                   child: ListTile(
-                    leading: const Icon(Icons.person),
-                    title: Text(aluno['nome'] ?? ''),
-                    subtitle: Text('RA: ${aluno['ra']} | ${aluno['bloco']}'),
+                    leading: const Icon(Icons.storage),
+                    title: Text(aluno.nome),
+                    subtitle: Text('RA: ${aluno.ra} | ${aluno.bloco}'),
                   ),
                 );
               },
@@ -128,12 +193,12 @@ class _MonitorPageState extends State<MonitorPage> {
         },
         destinations: const [
           NavigationDestination(
-            icon: Icon(Icons.fact_check),
-            label: 'Chamada',
+            icon: Icon(Icons.cloud_done),
+            label: 'Chamada (Nuvem)',
           ),
           NavigationDestination(
             icon: Icon(Icons.person_add),
-            label: 'Cadastrar Alunos',
+            label: 'Cadastro (SQLite)',
           ),
         ],
       ),
